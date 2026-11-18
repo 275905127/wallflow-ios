@@ -25,35 +25,84 @@ import SwiftUI
 
 struct SourceManager: View {
     let library: SourceLibrary
-    @Environment(\.dismiss) private var dismiss
+    let onSelection: () -> Void
     @State private var edit: FeedSource?
+    @State private var pendingSelection = false
+
     var body: some View {
         NavigationStack {
             List {
-                Section("已适配的网站 · 点按接入") {
-                    ForEach(SiteCatalog.sources.filter { site in !library.custom.contains { $0.id == site.id } }) { site in
-                        Button { library.save(site); dismiss() } label: {
-                            Label(site.name, systemImage: "plus.circle")
-                        }
-                    }
-                }
                 Section("我的图源") {
-                    ForEach(library.custom) { s in
-                        row(s).swipeActions(allowsFullSwipe: false) {
-                            Button("删除", role: .destructive) { library.remove(s) }
-                            Button("编辑") { edit = s }.tint(.blue)
+                    if library.custom.isEmpty {
+                        Text("选择一个已适配的网站，或添加自己的 HTTPS 接口。")
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(library.custom) { source in
+                        row(source).swipeActions(allowsFullSwipe: false) {
+                            Button("删除", systemImage: "trash", role: .destructive) {
+                                library.remove(source)
+                            }
+                            Button("编辑", systemImage: "pencil") { edit = source }
+                                .tint(.blue)
                         }
                     }
-                    Button("添加图源", systemImage: "plus") { var s = FeedSource(); s.name = ""; edit = s }
                 }
-            }.navigationTitle("图源").toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
-            .sheet(item: $edit) { s in SourceEditor(draft: s) { source in library.save(source); edit = nil } }
+                let available = SiteCatalog.sources.filter { site in
+                    !library.custom.contains { $0.id == site.id }
+                }
+                if !available.isEmpty {
+                    Section("已适配的网站") {
+                        ForEach(available) { site in
+                            Button(site.name, systemImage: "plus.circle") {
+                                library.save(site)
+                                onSelection()
+                            }
+                        }
+                    }
+                }
+            }
+            .listStyle(.insetGrouped)
+            .navigationTitle("图源")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("添加图源", systemImage: "plus") { edit = FeedSource(name: "") }
+                }
+            }
+            .sheet(item: $edit, onDismiss: {
+                if pendingSelection {
+                    pendingSelection = false
+                    onSelection()
+                }
+            }) { source in
+                SourceEditor(draft: source) { updated in
+                    library.save(updated)
+                    pendingSelection = true
+                    edit = nil
+                }
+            }
         }
+        .scrollEdgeEffectStyle(.soft, for: .top)
     }
-    private func row(_ s: FeedSource) -> some View {
-        Button { library.select(s); dismiss() } label: {
-            HStack { VStack(alignment: .leading) { Text(s.name); Text(s.kind == .json ? "JSON 列表" : "随机图片").font(.caption).foregroundStyle(.secondary) }; Spacer(); if library.selected?.id == s.id { Image(systemName: "checkmark").accessibilityLabel("已选择") } }
-        }.buttonStyle(.plain)
+
+    private func row(_ source: FeedSource) -> some View {
+        Button {
+            library.select(source)
+            onSelection()
+        } label: {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(source.name)
+                    Text(source.kind == .json ? "JSON 列表" : "随机图片")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if library.selected?.id == source.id {
+                    Image(systemName: "checkmark").accessibilityLabel("当前图源")
+                }
+            }
+        }
+        .buttonStyle(.plain)
     }
 }
 

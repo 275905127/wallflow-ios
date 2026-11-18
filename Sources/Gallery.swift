@@ -3,14 +3,31 @@ import ImageIO
 
 struct Gallery: View {
     @State private var library = SourceLibrary()
-    @State private var managing = false
+    @State private var selection: WallFlowTab = .gallery
 
     var body: some View {
-        GalleryFeed(source: library.selected) { managing = true }
-            // Replace request, paging, and preview state even when an edit keeps the UUID.
-            .id(library.selected.map(GallerySourceKey.init))
-            .sheet(isPresented: $managing) { SourceManager(library: library) }
+        TabView(selection: $selection) {
+            Tab("图库", systemImage: "photo.on.rectangle", value: WallFlowTab.gallery) {
+                NavigationStack {
+                    GalleryFeed(source: library.selected) { selection = .sources }
+                }
+                // Changing the selection or editing its fields also clears any old preview.
+                .id(library.selected.map(GallerySourceKey.init))
+                .scrollEdgeEffectStyle(.soft, for: .top)
+            }
+            Tab("图源", systemImage: "network", value: WallFlowTab.sources) {
+                SourceManager(library: library) { selection = .gallery }
+            }
+            Tab("设置", systemImage: "gearshape", value: WallFlowTab.settings) {
+                NativeSettingsView()
+            }
+        }
+        .tabViewStyle(.sidebarAdaptable)
     }
+}
+
+private enum WallFlowTab: Hashable {
+    case gallery, sources, settings
 }
 
 // FeedSource equality includes the configuration; hashing just the UUID is sufficient.
@@ -62,7 +79,6 @@ private struct GalleryFeed: View {
     @State private var draft: String
     @State private var query: String
     @State private var page: Int
-    @FocusState private var editing: Bool
     @State private var revision: UUID? = UUID()
     @State private var lastSuccess: (query: String, page: Int)?
 
@@ -78,11 +94,9 @@ private struct GalleryFeed: View {
     @State private var items: [WallItem] = []
     @State private var loading = true
     @State private var failure: String?
-    @State private var preview: WallItem?
 
     var body: some View {
-        ScrollView {
-            if search != nil { searchControls }
+        List {
             if source == nil {
                 ContentUnavailableView {
                     Label("尚未接入图源", systemImage: "photo.stack")
@@ -106,41 +120,61 @@ private struct GalleryFeed: View {
                     if search != nil { Text(page > 1 ? "本页没有结果，可返回上一页或更换关键词。" : "换个关键词试试，或清空搜索以浏览全部壁纸。") }
                 } actions: { Button("重新加载", action: reload) }
             } else {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 10)], spacing: 10) {
-                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                        Button { preview = item } label: {
-                            Rectangle().fill(.quaternary).aspectRatio(0.75, contentMode: .fit)
-                                .overlay { GalleryThumb(url: item.thumb).id(item.thumb) }
-                                .clipShape(.rect(cornerRadius: 14))
+                Section(source?.name ?? "壁纸") {
+                    ForEach(Array(visibleItems.enumerated()), id: \.element.id) { index, item in
+                        NavigationLink {
+                            GalleryPreview(url: item.full)
+                        } label: {
+                            HStack(spacing: 12) {
+                                GalleryThumb(url: item.thumb)
+                                    .id(item.thumb)
+                                    .frame(width: 76, height: 100)
+                                    .clipped()
+                                    .accessibilityHidden(true)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("壁纸 \(index + 1)")
+                                        .font(.headline)
+                                    Text(item.full.host ?? source?.name ?? "在线图源")
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                    Text("查看大图")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("查看第 \(index + 1) 张壁纸")
+                    }
+                    if visibleItems.isEmpty {
+                        ContentUnavailableView.search(text: draft)
                     }
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
+            }
+            if search != nil { pagingControls }
+        }
+        .listStyle(.plain)
+        .navigationTitle("映壁")
+        .navigationSubtitle(source?.name ?? "选择在线图源")
+        .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $draft, placement: .navigationBarDrawer(displayMode: .automatic),
+                    prompt: search != nil ? "搜索 Wallhaven 壁纸" : "筛选本页图片地址")
+        .onSubmit(of: .search, submitSearch)
+        .onChange(of: draft) { previous, value in
+            if search != nil && value.isEmpty && !previous.isEmpty && !query.isEmpty {
+                submitSearch()
             }
         }
-        .frame(maxWidth: .infinity)
-        .safeAreaBar(edge: .top) {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("映壁").font(.title.bold()).accessibilityAddTraits(.isHeader)
-                    Text(source?.name ?? "壁纸图库").font(.subheadline).lineLimit(1)
-                }
-                Spacer(minLength: 0)
-                if let source {
-                    let random = source.kind == .random
-                    Button(random ? "换一张" : "刷新", systemImage: random ? "shuffle" : "arrow.clockwise", action: reload)
-                        .disabled(loading)
-                }
-                Button("管理图源", systemImage: "slider.horizontal.3", action: manage)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("图源", systemImage: "slider.horizontal.3", action: manage)
             }
-            .labelStyle(.iconOnly)
-            .buttonStyle(.glass)
-            .controlSize(.large)
-            .padding(.horizontal, 16).padding(.vertical, 8)
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(source?.kind == .random ? "换一张" : "刷新",
+                       systemImage: source?.kind == .random ? "shuffle" : "arrow.clockwise", action: reload)
+                    .disabled(loading || source == nil)
+            }
         }
+        .scrollDismissesKeyboard(.interactively)
         .scrollEdgeEffectStyle(.soft, for: .top)
         .task(id: revision) { [revision] in
             guard let revision, var request = source else { return }
@@ -156,42 +190,32 @@ private struct GalleryFeed: View {
             }
             loading = false
         }
-        .fullScreenCover(item: $preview) { item in GalleryPreview(url: item.full) }
     }
 
-    private var searchControls: some View {
-        VStack(spacing: 12) {
-            HStack {
-                TextField("搜索 Wallhaven 壁纸", text: $draft)
-                    .textFieldStyle(.roundedBorder).focused($editing)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    .submitLabel(.search).onSubmit(submitSearch)
-                Button("搜索", systemImage: "magnifyingglass", action: submitSearch)
-                    .labelStyle(.iconOnly)
-            }
-            HStack {
-                Button("上一页", systemImage: "chevron.left") { turnPage(-1) }
-                    .labelStyle(.iconOnly).disabled(page <= 1)
-                Text("第 \(page) 页").monospacedDigit()
-                Button("下一页", systemImage: "chevron.right") { turnPage(1) }
-                    .labelStyle(.iconOnly).disabled(loading || failure != nil || items.isEmpty || page == Int.max)
-                Spacer()
-                if loading { Button("取消加载", action: cancelLoad) }
-            }
+    private var visibleItems: [WallItem] {
+        guard search == nil, !draft.isEmpty else { return items }
+        return items.filter { $0.full.absoluteString.localizedCaseInsensitiveContains(draft) }
+    }
+
+    private var pagingControls: some View {
+        Section("分页") {
+            LabeledContent("当前页", value: String(page))
+            Button("上一页", systemImage: "chevron.left") { turnPage(-1) }
+                .disabled(page <= 1 || loading)
+            Button("下一页", systemImage: "chevron.right") { turnPage(1) }
+                .disabled(loading || failure != nil || items.isEmpty || page == Int.max)
+            if loading { Button("取消加载", systemImage: "xmark.circle", action: cancelLoad) }
         }
-        .buttonStyle(.bordered)
-        .padding(.horizontal, 16).padding(.vertical, 8)
     }
 
     private func submitSearch() {
-        editing = false
+        guard search != nil else { return }
         query = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         page = 1
         reload()
     }
 
     private func turnPage(_ delta: Int) {
-        editing = false
         draft = query
         page += delta
         reload()
@@ -241,42 +265,36 @@ private struct GalleryThumb: View {
 
 private struct GalleryPreview: View {
     let url: URL
-    @Environment(\.dismiss) private var dismiss
     @State private var image: CGImage?
     @State private var failure: String?
     @State private var attempt = 0
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                Color.black.ignoresSafeArea()
-                if let image {
-                    Image(decorative: image, scale: 1).resizable().scaledToFit()
-                        .accessibilityLabel("壁纸大图")
-                } else if let failure {
-                    ContentUnavailableView {
-                        Label("无法打开大图", systemImage: "photo")
-                    } description: { Text(failure) } actions: {
-                        Button("重试") { self.failure = nil; attempt += 1 }
-                    }
-                } else { ProgressView("正在载入大图…") }
-            }
-            .navigationTitle("壁纸预览").navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("关闭", systemImage: "xmark") { dismiss() }
+        Group {
+            if let image {
+                Image(decorative: image, scale: 1).resizable().scaledToFit()
+                    .accessibilityLabel("壁纸大图")
+            } else if let failure {
+                ContentUnavailableView {
+                    Label("无法打开大图", systemImage: "photo")
+                } description: { Text(failure) } actions: {
+                    Button("重试") { self.failure = nil; attempt += 1 }
                 }
-                if let image {
-                    ToolbarItem(placement: .primaryAction) {
-                        let picture = Image(decorative: image, scale: 1)
-                        ShareLink(item: picture, preview: SharePreview("映壁壁纸", image: picture)) {
-                            Label("分享图片", systemImage: "square.and.arrow.up")
-                        }
+            } else { ProgressView("正在载入大图…") }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .navigationTitle("壁纸预览")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if let image {
+                ToolbarItem(placement: .primaryAction) {
+                    let picture = Image(decorative: image, scale: 1)
+                    ShareLink(item: picture, preview: SharePreview("映壁壁纸", image: picture)) {
+                        Label("分享图片", systemImage: "square.and.arrow.up")
                     }
                 }
             }
         }
-        .preferredColorScheme(.dark)
         .task(id: attempt) {
             do {
                 let result = try await GalleryImages.shared.read(url, maxPixel: nil)
