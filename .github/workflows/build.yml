@@ -1,0 +1,35 @@
+name: WallFlow IPA
+on: [push, workflow_dispatch]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 25
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify toolchain, archive and inspect IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(xcodebuild -version)" = $'Xcode 27.1\nBuild version 27A9275'
+          test "$(xcrun --sdk iphoneos --show-sdk-version)" = 27.1
+          test "$(xcrun --sdk iphoneos --show-sdk-build-version)" = 24A94232
+          command -v xcodegen || brew install xcodegen
+          xcodegen generate
+          xcodebuild -project WallFlow.xcodeproj -scheme WallFlow -configuration Release -sdk iphoneos27.1 -destination 'generic/platform=iOS' -archivePath build/WallFlow.xcarchive CODE_SIGNING_ALLOWED=NO SWIFT_VERSION=6.0 CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" archive
+          mkdir -p build/Payload
+          ditto build/WallFlow.xcarchive/Products/Applications/WallFlow.app build/Payload/WallFlow.app
+          cd build
+          ditto -c -k --keepParent --norsrc Payload WallFlow-unsigned.ipa
+          python3 ../ci/verify.py WallFlow-unsigned.ipa "$GITHUB_RUN_NUMBER" > verified.json
+          cat verified.json
+      - name: Publish verified unsigned IPA
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "build-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" build/WallFlow-unsigned.ipa build/verified.json --target "$GITHUB_SHA" --title "WallFlow · 映壁 $GITHUB_RUN_NUMBER" --notes "Unsigned device build of $GITHUB_SHA"
