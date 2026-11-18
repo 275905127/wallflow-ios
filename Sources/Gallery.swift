@@ -6,11 +6,7 @@ struct Gallery: View {
     @State private var managing = false
 
     var body: some View {
-        let online: FeedSource? = library.selected.flatMap { source in
-            // Legacy libraries may select an offline collection by default.
-            source.endpoint.hasPrefix("wallflow:") ? nil : source
-        }
-        GalleryFeed(source: online) { managing = true }
+        GalleryFeed(source: library.selected) { managing = true }
             // Replace request, paging, and preview state even when an edit keeps the UUID.
             .id(library.selected.map(GallerySourceKey.init))
             .sheet(isPresented: $managing) { SourceManager(library: library) }
