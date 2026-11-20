@@ -84,7 +84,7 @@ struct GalleryFeed: View {
     }
 
     private var visibleItems: [WallItem] {
-        guard let items = model.displayed?.feed.items else { return [] }
+        guard let items = model.displayed?.items else { return [] }
         let filter = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard source?.kind == .json, model.search == nil, !filter.isEmpty else { return items }
         return items.filter { $0.full.absoluteString.localizedCaseInsensitiveContains(filter) }
