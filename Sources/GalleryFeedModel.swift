@@ -4,17 +4,19 @@ import Observation
 @Observable @MainActor
 final class GalleryFeedModel {
     struct Request: Equatable {
-        var query: String
-        var page: Int
+        let query: String
+        let page: Int
+        var appending = false
     }
 
     struct Snapshot {
-        let request: Request
-        let feed: FeedPage
+        let query: String
+        let page: Int
+        let items: [WallItem]
+        let hasMore: Bool
     }
 
-    struct Failure: Identifiable {
-        let id: UUID
+    struct Failure {
         let request: Request
         let message: String
     }
@@ -25,7 +27,7 @@ final class GalleryFeedModel {
     private(set) var displayed: Snapshot?
     private(set) var pending: Request?
     private(set) var failure: Failure?
-    private(set) var cancelled = false
+    private(set) var resetID = UUID()
     @ObservationIgnored private var operation: Task<Void, Never>?
     @ObservationIgnored private var generation: UUID?
 
@@ -37,26 +39,19 @@ final class GalleryFeedModel {
     }
 
     var isLoading: Bool { pending != nil }
-    var appliedQuery: String { displayed?.request.query ?? intended.query }
-    var currentPage: Int { displayed?.request.page ?? intended.page }
-    var lastPage: Int? { displayed?.feed.lastPage }
-    var canGoBack: Bool { !isLoading && currentPage > 1 }
-    var canGoForward: Bool {
-        guard !isLoading, let displayed, currentPage < Int.max else { return false }
-        return lastPage.map { currentPage < $0 } ?? !displayed.feed.items.isEmpty
-    }
+    var appliedQuery: String { displayed?.query ?? intended.query }
+    var hasMore: Bool { displayed?.hasMore == true }
 
     func ensureLoaded() async {
-        guard displayed == nil, failure == nil, !cancelled else { return }
+        guard displayed == nil, failure == nil else { return }
         await start(intended)?.value
     }
 
     func refresh() async {
-        if let operation { await operation.value; return }
-        await start(displayed?.request ?? intended)?.value
+        await start(reloadRequest)?.value
     }
 
-    func reload() { start(displayed?.request ?? intended) }
+    func reload() { start(reloadRequest) }
 
     func retry(_ failure: Failure) { start(failure.request) }
 
@@ -68,56 +63,66 @@ final class GalleryFeedModel {
     }
 
     func clearSearchIfNeeded() {
-        guard !(pending?.query ?? displayed?.request.query ?? intended.query).isEmpty else { return }
+        guard !(pending?.query ?? displayed?.query ?? intended.query).isEmpty else { return }
         submit("")
     }
 
-    func turnPage(_ offset: Int) {
-        guard search != nil else { return }
-        let allowed = offset == -1 ? canGoBack : offset == 1 && canGoForward
-        guard allowed else { return }
-        let base = displayed?.request ?? intended
-        start(Request(query: base.query, page: base.page + offset))
+    func loadMore() {
+        guard search != nil, let displayed, displayed.hasMore, displayed.page < Int.max, !isLoading, failure == nil else { return }
+        start(Request(query: displayed.query, page: displayed.page + 1, appending: true))
     }
 
-    func cancel(userInitiated: Bool = false) {
-        guard operation != nil else { return }
+    func cancel() {
         operation?.cancel()
         operation = nil
         generation = nil
         pending = nil
-        if let displayed { intended = displayed.request }
-        cancelled = userInitiated && displayed == nil
+    }
+
+    private var reloadRequest: Request {
+        guard let displayed else { return intended }
+        return Request(query: displayed.query, page: displayed.query == search?.initialQuery ? search?.initialPage ?? 1 : 1)
     }
 
     @discardableResult
     private func start(_ request: Request) -> Task<Void, Never>? {
-        guard var source else { return nil }
+        guard let source else { return nil }
         if pending == request, let operation { return operation }
         operation?.cancel()
         let token = UUID()
         generation = token
-        intended = request
+        if !request.appending { intended = request }
         pending = request
         failure = nil
-        cancelled = false
         let operation = Task { [weak self, search] in
             do {
+                var input = source
                 if let search {
-                    source.endpoint = try search.endpoint(query: request.query, page: request.page)
+                    input.endpoint = try search.endpoint(query: request.query, page: request.page)
                 }
-                let feed = try await FeedLoader.loadPage(source, paged: search != nil)
+                let feed = try await FeedLoader.loadPage(input, paged: search != nil)
                 guard !Task.isCancelled, let self, self.generation == token else { return }
-                self.displayed = Snapshot(request: request, feed: feed)
+                self.apply(feed, for: request)
                 self.finish()
             } catch {
                 guard !Task.isCancelled, let self, self.generation == token else { return }
-                self.failure = Failure(id: token, request: request, message: error.localizedDescription)
+                self.failure = Failure(request: request, message: error.localizedDescription)
                 self.finish()
             }
         }
         self.operation = operation
         return operation
+    }
+
+    private func apply(_ feed: FeedPage, for request: Request) {
+        var items = request.appending ? displayed?.items ?? [] : []
+        var seen = Set(items.map(\.id))
+        let additions = feed.items.filter { seen.insert($0.id).inserted }
+        items.append(contentsOf: additions)
+        let hasMore = search != nil && !additions.isEmpty && request.page < Int.max
+            && (feed.lastPage.map { request.page < $0 } ?? true)
+        displayed = Snapshot(query: request.query, page: request.page, items: items, hasMore: hasMore)
+        if !request.appending { resetID = UUID() }
     }
 
     private func finish() {

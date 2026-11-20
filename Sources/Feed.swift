@@ -17,8 +17,14 @@ struct FeedSource: Identifiable, Codable, Equatable, Sendable {
 struct WallItem: Identifiable, Hashable, Sendable {
     let full: URL
     let thumb: URL
-    let resolution: String?
+    let dimensions: ImageDimensions?
     var id: URL { full }
+    var resolution: String? { dimensions.map { "\($0.width) × \($0.height)" } }
+}
+
+struct ImageDimensions: Hashable, Sendable {
+    let width: Int
+    let height: Int
 }
 
 struct FeedPage: Sendable {
@@ -95,7 +101,7 @@ enum FeedLoader {
             case .json: return try parsePage(data, source, url, paged: paged)
             case .random:
                 let file = try await PictureCache.shared.store(data)
-                return FeedPage(items: [WallItem(full: file, thumb: file, resolution: nil)], lastPage: nil)
+                return FeedPage(items: [WallItem(full: file, thumb: file, dimensions: nil)], lastPage: nil)
             }
         }
         throw FeedError("图源重定向次数过多。")
@@ -122,12 +128,12 @@ enum FeedLoader {
             let image = (row as? String) ?? (value(row, source.imagePath) as? String)
             guard let full = https(image, relativeTo: base), seen.insert(full).inserted else { continue }
             let thumb = https(value(row, source.thumbPath) as? String, relativeTo: base) ?? full
-            let resolution: String? = if paged,
-                let width = value(row, "dimension_x") as? Int, width > 0,
-                let height = value(row, "dimension_y") as? Int, height > 0 {
-                "\(width) × \(height)"
+            let dimensions: ImageDimensions? = if
+                let width = value(row, paged ? "dimension_x" : "width") as? Int, width > 0,
+                let height = value(row, paged ? "dimension_y" : "height") as? Int, height > 0 {
+                ImageDimensions(width: width, height: height)
             } else { nil }
-            result.append(WallItem(full: full, thumb: thumb, resolution: resolution))
+            result.append(WallItem(full: full, thumb: thumb, dimensions: dimensions))
             if result.count == 200 { break }
         }
         if !rows.isEmpty && result.isEmpty { throw FeedError("列表中没有可用的 HTTPS 图片，请检查原图路径。") }

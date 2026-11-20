@@ -20,6 +20,8 @@ jobs:
           test "$(xcodebuild -version)" = $'Xcode 27.1\nBuild version 27A9275'
           test "$(xcrun --sdk iphoneos --show-sdk-version)" = 27.1
           test "$(xcrun --sdk iphoneos --show-sdk-build-version)" = 24A94232
+          xcrun --sdk macosx swiftc -swift-version 6 -target "$(uname -m)-apple-macos26.0" -sdk "$(xcrun --sdk macosx --show-sdk-path)" Sources/Feed.swift Sources/Catalog.swift Sources/Library.swift Sources/MasonryColumns.swift ci/SmokeChecks.swift -o "${RUNNER_TEMP}/wallflow-smoke"
+          "${RUNNER_TEMP}/wallflow-smoke"
           command -v xcodegen || brew install xcodegen
           xcodegen generate
           xcodebuild -project WallFlow.xcodeproj -scheme WallFlow -configuration Release -sdk iphoneos27.1 -destination 'generic/platform=iOS' -archivePath build/WallFlow.xcarchive CODE_SIGNING_ALLOWED=NO SWIFT_VERSION=6.0 CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" archive

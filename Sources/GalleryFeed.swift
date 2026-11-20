@@ -8,8 +8,16 @@ struct GalleryFeed: View {
 
     @State private var model: GalleryFeedModel
     @State private var draft: String
+    @State private var scrollPosition = ScrollPosition(edge: .top)
+    @State private var availableWidth: CGFloat = 0
+    @State private var randomPreview: (url: URL, image: CGImage)?
+    @State private var randomPreviewFailed = false
     @Namespace private var previewTransition
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    private let margin: CGFloat = 12
+    private let spacing: CGFloat = 8
 
     init(source: FeedSource?, sources: [FeedSource], select: @escaping (FeedSource) -> Void, manage: @escaping () -> Void) {
         self.source = source
@@ -22,20 +30,18 @@ struct GalleryFeed: View {
     }
 
     var body: some View {
-        browsingList
+        browsingContent
             .navigationTitle("映壁")
             .navigationSubtitle(source?.name ?? "在线壁纸")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { sourceMenu }
-                if model.search != nil {
-                    ToolbarItem(placement: .topBarTrailing) { pageMenu }
-                } else if let source {
+                if let source {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button(source.kind == .random ? "换一张" : "刷新",
                                systemImage: source.kind == .random ? "shuffle" : "arrow.clockwise",
                                action: model.reload)
-                            .disabled(model.isLoading)
+                            .disabled(model.isLoading && model.pending?.appending != true)
                     }
                 }
             }
@@ -53,9 +59,9 @@ struct GalleryFeed: View {
     }
 
     @ViewBuilder
-    private var browsingList: some View {
+    private var browsingContent: some View {
         if model.search != nil {
-            feedList
+            feedScroll
                 .refreshable { await model.refresh() }
                 .searchable(text: $draft, placement: .navigationBarDrawer(displayMode: .automatic),
                             prompt: "搜索 Wallhaven 壁纸")
@@ -65,15 +71,15 @@ struct GalleryFeed: View {
                 }
                 .scrollDismissesKeyboard(.interactively)
         } else if source?.kind == .json {
-            feedList
+            feedScroll
                 .refreshable { await model.refresh() }
                 .searchable(text: $draft, placement: .navigationBarDrawer(displayMode: .automatic),
                             prompt: "筛选本页图片地址")
                 .scrollDismissesKeyboard(.interactively)
         } else if source != nil {
-            feedList.refreshable { await model.refresh() }
+            feedScroll.refreshable { await model.refresh() }
         } else {
-            feedList
+            feedScroll
         }
     }
 
@@ -84,38 +90,128 @@ struct GalleryFeed: View {
         return items.filter { $0.full.absoluteString.localizedCaseInsensitiveContains(filter) }
     }
 
-    private var feedList: some View {
+    private var feedScroll: some View {
         let items = visibleItems
-        let isRandom = source?.kind == .random
-        return ScrollViewReader { proxy in
-            List {
+        return ScrollView {
+            VStack(spacing: 16) {
                 if !items.isEmpty {
-                    if model.isLoading {
+                    if model.isLoading && model.pending?.appending != true {
                         ProgressView("正在更新壁纸…")
                     }
-                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                        NavigationLink(value: item) {
-                            GalleryRow(item: item, name: isRandom ? "随机壁纸" : "壁纸 \(index + 1)",
-                                       isRandom: isRandom, transition: previewTransition)
+                    if source?.kind == .random, let item = items.first {
+                        randomLink(to: item)
+                    } else if availableWidth > 0 {
+                        waterfall(items)
+                    }
+                    pagination
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, margin)
+            .padding(.vertical, 12)
+        }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { availableWidth = $0 }
+        .scrollPosition($scrollPosition)
+        .onChange(of: model.resetID) { scrollPosition.scrollTo(edge: .top) }
+        .overlay { emptyState(hasVisibleItems: !items.isEmpty) }
+        .alert("无法更新壁纸", isPresented: Binding(
+            get: { model.displayed != nil && model.failure?.request.appending == false },
+            set: { if !$0 { model.dismissFailure() } }
+        ), presenting: model.failure) { failure in
+            Button("重试") { model.retry(failure) }
+            Button("好", role: .cancel) { }
+        } message: { failure in
+            Text(failure.message)
+        }
+    }
+
+    private func waterfall(_ items: [WallItem]) -> some View {
+        let width = max(1, min(availableWidth - 2 * margin, 1160))
+        let count = typeSize.isAccessibilitySize || width < 280 ? 1 : min(5, max(2, Int((width + spacing) / 190)))
+        let columnWidth = max(1, (width - CGFloat(count - 1) * spacing) / CGFloat(count))
+        let columns = MasonryColumns.make(items: items, count: count, columnWidth: Double(columnWidth), spacing: Double(spacing))
+        return HStack(alignment: .top, spacing: spacing) {
+            ForEach(columns.indices, id: \.self) { column in
+                LazyVStack(spacing: spacing) {
+                    ForEach(columns[column]) { entry in
+                        NavigationLink(value: entry.item) {
+                            AsyncImage(url: entry.item.thumb) { phase in
+                                switch phase {
+                                case .success(let image):
+                                    image.resizable().scaledToFill().accessibilityIgnoresInvertColors()
+                                case .failure:
+                                    Image(systemName: "photo.badge.exclamationmark").foregroundStyle(.secondary)
+                                default:
+                                    ProgressView()
+                                }
+                            }
+                            .frame(width: columnWidth, height: columnWidth / CGFloat(entry.aspectRatio))
+                            .background(.quaternary, in: .rect(cornerRadius: 10))
+                            .clipShape(.rect(cornerRadius: 10))
+                            .matchedTransitionSource(id: entry.item.id, in: previewTransition)
+                            .accessibilityHidden(true)
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(Text("壁纸 \(entry.number)"))
+                        .accessibilityValue(Text(entry.item.resolution ?? ""))
                     }
                 }
+                .frame(width: columnWidth)
             }
-            .listStyle(.plain)
-            .overlay { emptyState(hasVisibleItems: !items.isEmpty) }
-            .onChange(of: model.displayed?.request) { previous, _ in
-                if previous != nil, let id = items.first?.id {
-                    proxy.scrollTo(id, anchor: .top)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func randomLink(to item: WallItem) -> some View {
+        NavigationLink(value: item) {
+            Group {
+                if let randomPreview, randomPreview.url == item.id {
+                    Image(decorative: randomPreview.image, scale: 1)
+                        .resizable().scaledToFit().accessibilityIgnoresInvertColors()
+                } else if randomPreviewFailed {
+                    ContentUnavailableView("无法载入缩略图", systemImage: "photo.badge.exclamationmark")
+                } else {
+                    ProgressView("正在载入图片…").padding()
                 }
             }
-            .alert("无法更新壁纸", isPresented: Binding(
-                get: { model.displayed != nil && model.failure != nil },
-                set: { if !$0 { model.dismissFailure() } }
-            ), presenting: model.failure) { failure in
-                Button("重试") { model.retry(failure) }
-                Button("好", role: .cancel) { }
-            } message: { failure in
-                Text(failure.message)
+            .frame(maxWidth: 480, maxHeight: 680)
+            .clipShape(.rect(cornerRadius: 10))
+            .matchedTransitionSource(id: item.id, in: previewTransition)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("预览随机壁纸")
+        .task(id: item.id) {
+            randomPreviewFailed = false
+            do {
+                let image = try await GalleryImages.shared.read(item.thumb, maxPixel: 1200)
+                try Task.checkCancellation()
+                randomPreview = (item.id, image)
+            } catch {
+                if !Task.isCancelled { randomPreviewFailed = true }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var pagination: some View {
+        if model.search != nil {
+            if model.pending?.appending == true {
+                ProgressView("正在加载更多…").padding(.vertical, 12)
+            } else if let failure = model.failure, failure.request.appending {
+                VStack {
+                    Text(failure.message).font(.footnote).foregroundStyle(.secondary)
+                    Button("重试加载更多", systemImage: "arrow.clockwise") { model.retry(failure) }
+                        .buttonStyle(.bordered)
+                }
+            } else if !model.isLoading && model.hasMore {
+                Button("加载更多", systemImage: "arrow.down") { model.loadMore() }
+                    .buttonStyle(.bordered)
+                    .padding(.vertical, 8)
+                    .onScrollVisibilityChange(threshold: 0.6) { visible in
+                        if visible { model.loadMore() }
+                    }
+            } else if !model.isLoading {
+                Text("已浏览全部结果").font(.footnote).foregroundStyle(.secondary)
             }
         }
     }
@@ -139,15 +235,9 @@ struct GalleryFeed: View {
                 } actions: {
                     Button("重试") { model.retry(failure) }.buttonStyle(.bordered)
                 }
-            } else if model.isLoading || (model.displayed == nil && !model.cancelled) {
+            } else if model.isLoading || model.displayed == nil {
                 ProgressView("正在载入壁纸…")
-            } else if model.cancelled {
-                ContentUnavailableView {
-                    Label("已取消加载", systemImage: "pause.circle")
-                } actions: {
-                    Button("重新加载", action: model.reload).buttonStyle(.bordered)
-                }
-            } else if model.search == nil, source?.kind == .json, model.displayed?.feed.items.isEmpty == false {
+            } else if model.search == nil, source?.kind == .json, model.displayed?.items.isEmpty == false {
                 ContentUnavailableView.search(text: draft)
             } else if !model.appliedQuery.isEmpty {
                 ContentUnavailableView.search(text: model.appliedQuery)
@@ -160,46 +250,18 @@ struct GalleryFeed: View {
 
     private var sourceMenu: some View {
         Menu("图源", systemImage: "network") {
-            if !sources.isEmpty {
-                Section("已接入的图源") {
+            Section {
+                Picker("当前图源", selection: Binding(
+                    get: { source?.id ?? SiteCatalog.wallhaven.id },
+                    set: { id in if let candidate = sources.first(where: { $0.id == id }) { select(candidate) } }
+                )) {
                     ForEach(sources) { candidate in
-                        Button {
-                            select(candidate)
-                        } label: {
-                            if candidate.id == source?.id {
-                                Label(candidate.name, systemImage: "checkmark")
-                            } else {
-                                Text(candidate.name)
-                            }
-                        }
-                        .accessibilityAddTraits(candidate.id == source?.id ? .isSelected : [])
+                        Text(candidate.name).tag(candidate.id)
                     }
                 }
+                .pickerStyle(.inline)
             }
             Button("管理图源", systemImage: "slider.horizontal.3", action: manage)
         }
-    }
-
-    private var pageMenu: some View {
-        Menu("分页", systemImage: "ellipsis.circle") {
-            Section {
-                Button("上一页", systemImage: "chevron.left") { model.turnPage(-1) }
-                    .disabled(!model.canGoBack)
-                Button("下一页", systemImage: "chevron.right") { model.turnPage(1) }
-                    .disabled(!model.canGoForward)
-            } header: {
-                if let last = model.lastPage {
-                    Text("第 \(model.currentPage) 页（共 \(last) 页）")
-                } else {
-                    Text("第 \(model.currentPage) 页")
-                }
-            }
-            if model.isLoading {
-                Button("取消加载", systemImage: "xmark.circle") { model.cancel(userInitiated: true) }
-            } else {
-                Button("刷新本页", systemImage: "arrow.clockwise", action: model.reload)
-            }
-        }
-        .accessibilityValue(Text("第 \(model.currentPage) 页"))
     }
 }
