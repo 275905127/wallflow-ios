@@ -9,8 +9,14 @@
 - **JSON 列表**：例如响应 `{"data":{"items":[{"urls":{"full":"https://example.org/a.jpg","small":"https://example.org/t.jpg"}}]}}`，填列表 `data.items`、原图 `urls.full`、缩略图 `urls.small`。顶层数组的列表路径留空；原图字符串数组不需要原图字段。支持相对图片地址。缩略图可省略。
 - **随机图片**：接口直接返回图片，或重定向到 HTTPS 图片；点击换图再次请求。不是返回图片地址的 JSON 对象。
 
-已有配置可以侧滑编辑或删除。规则只存本机，不同步；不要把密钥嵌进地址。普通网页不是 JSON 接口，未适配的 HTML 网站不能仅靠粘贴主页接入。
+已有配置可通过行尾菜单或侧滑编辑、删除，也可以在表单中先测试接口。规则只存本机，不同步；不要把密钥嵌进地址。普通网页不是 JSON 接口，未适配的 HTML 网站不能仅靠粘贴主页接入。
+
+## 浏览
+
+图库展示大缩略图。工具栏的「图源」菜单可直接切换已接入的网站。Wallhaven 支持搜索和分页，支持时按接口返回的末页停止；自定义 JSON 图源可筛选本页图片地址。下拉刷新当前图源，随机图片还可通过「换一张」刷新。点开缩略图查看等比原图，再使用系统分享菜单。
+
+标签栏、导航、列表、搜索抽屉、下拉刷新、图源表单、弹窗和分享均使用 SwiftUI 系统组件。顶栏使用 `scrollEdgeEffectStyle(.soft, for: .top)`，不覆盖系统导航栏背景。
 
 ## 构建
 
-XcodeGen，Swift 6 模式，iOS 26.0 起。Actions 锁定 Xcode 27.1 (27A9275) 和 iphoneos27.1 (24A94232)，发布的 IPA 未签名，需自行签名安装。顶栏使用系统 `safeAreaBar` 和 `scrollEdgeEffectStyle(.soft, for: .top)`。
+XcodeGen，Swift 6 模式，iOS 26.0 起。Actions 锁定 Xcode 27.1 (27A9275) 和 iphoneos27.1 (24A94232)，发布的 IPA 未签名，需自行签名安装。

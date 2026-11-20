@@ -14,10 +14,16 @@ struct FeedSource: Identifiable, Codable, Equatable, Sendable {
     var thumbPath = ""
 }
 
-struct WallItem: Identifiable, Sendable {
-    var id = UUID()
+struct WallItem: Identifiable, Hashable, Sendable {
     let full: URL
     let thumb: URL
+    let resolution: String?
+    var id: URL { full }
+}
+
+struct FeedPage: Sendable {
+    let items: [WallItem]
+    let lastPage: Int?
 }
 
 private struct FeedError: LocalizedError {
@@ -46,6 +52,10 @@ enum FeedLoader {
     }
 
     static func load(_ source: FeedSource) async throws -> [WallItem] {
+        try await loadPage(source).items
+    }
+
+    static func loadPage(_ source: FeedSource, paged: Bool = false) async throws -> FeedPage {
         try Task.checkCancellation()
         guard var url = https(source.endpoint) else { throw FeedError("图源需要不含用户名和密码的 HTTPS 地址。") }
         let config = URLSessionConfiguration.ephemeral
@@ -82,10 +92,10 @@ enum FeedLoader {
             }
             try Task.checkCancellation()
             switch source.kind {
-            case .json: return try items(data, source, url)
+            case .json: return try parsePage(data, source, url, paged: paged)
             case .random:
                 let file = try await PictureCache.shared.store(data)
-                return [WallItem(full: file, thumb: file)]
+                return FeedPage(items: [WallItem(full: file, thumb: file, resolution: nil)], lastPage: nil)
             }
         }
         throw FeedError("图源重定向次数过多。")
@@ -102,8 +112,9 @@ enum FeedLoader {
         return current
     }
 
-    private static func items(_ data: Data, _ source: FeedSource, _ base: URL) throws -> [WallItem] {
+    private static func parsePage(_ data: Data, _ source: FeedSource, _ base: URL, paged: Bool) throws -> FeedPage {
         let root = try JSONSerialization.jsonObject(with: data)
+        let lastPage = paged ? (value(root, "meta.last_page") as? Int).map { max(1, $0) } : nil
         guard let rows = value(root, source.listPath) as? [Any] else { throw FeedError("列表路径没有指向 JSON 数组。") }
         var seen = Set<URL>(), result = [WallItem]()
         for row in rows {
@@ -111,11 +122,16 @@ enum FeedLoader {
             let image = (row as? String) ?? (value(row, source.imagePath) as? String)
             guard let full = https(image, relativeTo: base), seen.insert(full).inserted else { continue }
             let thumb = https(value(row, source.thumbPath) as? String, relativeTo: base) ?? full
-            result.append(WallItem(full: full, thumb: thumb))
+            let resolution: String? = if paged,
+                let width = value(row, "dimension_x") as? Int, width > 0,
+                let height = value(row, "dimension_y") as? Int, height > 0 {
+                "\(width) × \(height)"
+            } else { nil }
+            result.append(WallItem(full: full, thumb: thumb, resolution: resolution))
             if result.count == 200 { break }
         }
         if !rows.isEmpty && result.isEmpty { throw FeedError("列表中没有可用的 HTTPS 图片，请检查原图路径。") }
-        return result
+        return FeedPage(items: result, lastPage: lastPage)
     }
 }
 

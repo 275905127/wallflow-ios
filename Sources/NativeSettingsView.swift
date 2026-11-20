@@ -15,17 +15,29 @@ struct NativeSettingsView: View {
                     LabeledContent("应用", value: "映壁 · WallFlow")
                     LabeledContent("版本", value: version)
                 }
-                Section("图源与隐私") {
-                    Text("图源配置保存在本机。浏览时由设备直接向所选图源和图片服务器请求内容。")
-                    Text("不内置壁纸，不需要登录。图片权益归原权利人所有。")
+                Section {
+                    Label("图源配置仅保存在本机", systemImage: "internaldrive")
+                    Label("不需要登录", systemImage: "person.crop.circle")
+                } header: {
+                    Text("图源与隐私")
+                } footer: {
+                    Text("浏览时，设备直接向所选图源和图片服务器请求内容。测试时，设备会请求表单中的图源接口。")
+                }
+                Section {
                     if let url = URL(string: "https://wallhaven.cc/") {
-                        Link("Wallhaven 官网", destination: url)
+                        Link(destination: url) {
+                            Label("Wallhaven 官网", systemImage: "safari")
+                        }
                     }
+                } header: {
+                    Text("图源网站")
+                } footer: {
+                    Text("应用不内置壁纸，图片权益归原权利人所有。")
                 }
             }
             .listStyle(.insetGrouped)
             .navigationTitle("设置")
-            .navigationBarTitleDisplayMode(.inline)
+            .navigationBarTitleDisplayMode(.large)
         }
         .scrollEdgeEffectStyle(.soft, for: .top)
     }
